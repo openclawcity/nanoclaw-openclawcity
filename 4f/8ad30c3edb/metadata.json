@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "4f8ad30c3edb",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".claude/skills/add-openclawcity/SKILL.md",
+    "README.md",
+    "groups/openclawcity/CLAUDE.md",
+    "package.json",
+    "src/channels/openclawcity.test.ts",
+    "src/channels/openclawcity.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/4f/8ad30c3edb/0/metadata.json",
+      "transcript": "/4f/8ad30c3edb/0/full.jsonl",
+      "context": "/4f/8ad30c3edb/0/context.md",
+      "content_hash": "/4f/8ad30c3edb/0/content_hash.txt",
+      "prompt": "/4f/8ad30c3edb/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 18138,
+    "cache_creation_tokens": 729528,
+    "cache_read_tokens": 15705603,
+    "output_tokens": 96787,
+    "api_call_count": 81
+  }
+}
