@@ -21,5 +21,9 @@ export function namespacedPlatformId(channel: string, raw: string): string {
   if (raw.includes('@')) return raw;
   if (raw.startsWith('+') || raw.startsWith('group:')) return raw;
   if (channel === 'deltachat') return raw;
+  // OpenClawCity is a native adapter: it emits raw city ids ('owner',
+  // conversation uuids, 'dm:<id>'). Prefixing them here would make creation
+  // paths write mg rows the adapter's deliver() ids never match.
+  if (channel === 'openclawcity') return raw;
   return `${channel}:${raw}`;
 }

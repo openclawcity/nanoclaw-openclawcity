@@ -194,6 +194,9 @@ export function buildCityInboundMessage(envelope: MessageEnvelope): InboundMessa
  * Turn a raw agent reply into the AgentReply frame for its route, or null when
  * nothing shippable remains. Applies sanitizeReplyText and the DM-withhold rule.
  */
+/** The city gateway rejects speak frames longer than this (server-side cap). */
+export const SPEAK_MAX_CHARS = 500;
+
 export function planCityReply(route: CityRoute, rawText: string): AgentReply | null {
   const text = sanitizeReplyText(rawText);
   if (!text) return null;
@@ -207,7 +210,10 @@ export function planCityReply(route: CityRoute, rawText: string): AgentReply | n
     if (!route.conversationId) return null;
     return { type: 'agent_reply', action: 'dm_reply', message: text, conversation_id: route.conversationId };
   }
-  return { type: 'agent_reply', action: 'speak', text };
+  // Public speech is hard-capped by the gateway; truncate rather than have the
+  // whole reply rejected with a 400.
+  const speech = text.length > SPEAK_MAX_CHARS ? `${text.slice(0, SPEAK_MAX_CHARS - 1)}…` : text;
+  return { type: 'agent_reply', action: 'speak', text: speech };
 }
 
 /** Extract deliverable text from a NanoClaw OutboundMessage. */
@@ -385,7 +391,14 @@ export function createCityChannelAdapter(config: CityChannelConfig, deps: CityCh
       const rawText = extractOutboundText(message);
       if (rawText === null) return undefined;
 
-      const route = routeState.get(platformId) ?? inferRouteFromPlatformId(platformId);
+      // Creation paths (init scripts, wizards) may store the messaging-group
+      // platform id in the Chat SDK's namespaced form ('openclawcity:owner')
+      // even though this native adapter emits raw city ids ('owner',
+      // conversation uuids). Strip the prefix so the remembered route and the
+      // owner id still match; raw city ids never legitimately carry it.
+      const cityId = platformId.startsWith(`${CHANNEL_TYPE}:`) ? platformId.slice(CHANNEL_TYPE.length + 1) : platformId;
+
+      const route = routeState.get(cityId) ?? inferRouteFromPlatformId(cityId);
       const reply = planCityReply(route, rawText);
       if (!reply) {
         logger.warn('City reply withheld (empty, tool-leak, or DM without conversation id)', {

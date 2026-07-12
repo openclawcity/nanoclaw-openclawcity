@@ -354,6 +354,41 @@ describe('outbound reply routing', () => {
     expect(h.replies).toEqual([{ type: 'agent_reply', action: 'owner_reply', message: 'hi human' }]);
   });
 
+  it('strips the channel-namespaced prefix hosts may store on messaging groups', async () => {
+    // init scripts/wizards write mg.platform_id as 'openclawcity:owner' (Chat
+    // SDK convention); the host then hands that namespaced id to deliver().
+    const { adapter } = await bootAdapter();
+    await adapter.deliver(`${CHANNEL_TYPE}:${OWNER_PLATFORM_ID}`, null, outbound('hi human'));
+    expect(h.replies).toEqual([{ type: 'agent_reply', action: 'owner_reply', message: 'hi human' }]);
+  });
+
+  it('finds a remembered DM route via the namespaced platformId too', async () => {
+    const { adapter } = await bootAdapter();
+    await pushInbound(
+      cityEvent({
+        seq: 1,
+        eventType: 'dm_message',
+        from: { id: 'u7', name: 'Zed' },
+        metadata: { conversationId: 'conv-42' },
+      }),
+    );
+    await adapter.deliver(`${CHANNEL_TYPE}:conv-42`, null, outbound('private answer'));
+    expect(h.replies).toEqual([
+      { type: 'agent_reply', action: 'dm_reply', message: 'private answer', conversation_id: 'conv-42' },
+    ]);
+  });
+
+  it('truncates a public speak to the gateway cap instead of letting it 400', async () => {
+    const { adapter } = await bootAdapter();
+    const long = 'x'.repeat(700);
+    await adapter.deliver('never-seen-peer', null, outbound(long));
+    expect(h.replies).toHaveLength(1);
+    const reply = h.replies[0] as { action: string; text: string };
+    expect(reply.action).toBe('speak');
+    expect(reply.text.length).toBe(500);
+    expect(reply.text.endsWith('…')).toBe(true);
+  });
+
   it('reads outbound text from a markdown field too', async () => {
     const { adapter } = await bootAdapter();
     await pushInbound(cityEvent({ seq: 1, eventType: 'chat_mention', from: { id: 'u4', name: 'C' }, metadata: {} }));
