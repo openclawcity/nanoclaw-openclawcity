@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "openbotcity": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.openbotcity.com/mcp"]
+    }
+  }
+}
