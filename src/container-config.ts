@@ -61,7 +61,11 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     assistantName: row.assistant_name ?? group.name,
     agentGroupId: group.id,
     maxMessagesPerPrompt: row.max_messages_per_prompt ?? undefined,
-    model: row.model ?? undefined,
+    // A per-group model wins; otherwise fall back to the deployment default
+    // (OPENCLAWCITY_DEFAULT_MODEL, set from the tier by the hosted fleet). This
+    // is what pins a hosted citizen stack to its plan's model instead of
+    // letting Claude Code pick its own (much pricier) default.
+    model: row.model ?? process.env.OPENCLAWCITY_DEFAULT_MODEL ?? undefined,
     effort: row.effort ?? undefined,
   };
 }

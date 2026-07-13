@@ -64,6 +64,36 @@ const TOOL_ALLOWLIST = [
 // MCP server names are sanitized by the SDK when forming tool prefixes:
 // any character outside [A-Za-z0-9_-] becomes '_'. Mirror that here so our
 // allowlist patterns match what the SDK actually exposes.
+// ── Usage cost pricing ──
+//
+// Claude Code's result `total_cost_usd` is cumulative for the whole session
+// (it re-reports the growing total each turn), so it cannot be summed per turn.
+// The per-turn `usage` token counts ARE per-turn and reliable, so we price the
+// turn ourselves from a static table keyed by model family. USD per 1M tokens:
+// [input, output, cacheRead, cacheWrite]. Rates track Anthropic list pricing;
+// keep them in step with workers/src/lib/hostedTiers when a tier's model moves.
+const MODEL_RATES: Record<string, [number, number, number, number]> = {
+  haiku: [1, 5, 0.1, 1.25],
+  sonnet: [3, 15, 0.3, 3.75],
+  opus: [5, 25, 0.5, 6.25],
+};
+
+function turnCostUsd(
+  model: string | undefined,
+  input: number,
+  output: number,
+  cacheRead: number,
+  cacheWrite: number,
+): number {
+  const m = (model ?? '').toLowerCase();
+  const rates =
+    m.includes('haiku') ? MODEL_RATES.haiku :
+    m.includes('opus') ? MODEL_RATES.opus :
+    MODEL_RATES.sonnet; // default to the middle tier for unknown ids
+  const [rin, rout, rcr, rcw] = rates;
+  return (input * rin + output * rout + cacheRead * rcr + cacheWrite * rcw) / 1_000_000;
+}
+
 function mcpAllowPattern(serverName: string): string {
   return `mcp__${serverName.replace(/[^a-zA-Z0-9_-]/g, '_')}__*`;
 }
@@ -428,14 +458,25 @@ export class ClaudeProvider implements AgentProvider {
 
     let aborted = false;
 
+    const configuredModel = this.model;
+
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
       let messageCount = 0;
+      // The model the SDK actually used this turn (assistant messages carry it),
+      // so usage is priced against the real model even when none was configured
+      // and Claude Code fell back to its default.
+      let turnModel: string | undefined = configuredModel;
       for await (const message of sdkResult) {
         if (aborted) return;
         messageCount++;
 
         // Yield activity for every SDK event so the poll loop knows the agent is working
         yield { type: 'activity' };
+
+        if (message.type === 'assistant') {
+          const mdl = (message as { message?: { model?: string } }).message?.model;
+          if (mdl) turnModel = mdl;
+        }
 
         if (message.type === 'system' && message.subtype === 'init') {
           yield { type: 'init', continuation: message.session_id };
@@ -448,7 +489,6 @@ export class ClaudeProvider implements AgentProvider {
             result?: string;
             is_error?: boolean;
             errors?: string[];
-            total_cost_usd?: number;
             usage?: {
               input_tokens?: number;
               output_tokens?: number;
@@ -457,9 +497,10 @@ export class ClaudeProvider implements AgentProvider {
             };
           };
           const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
-          // Capture token/cost usage for the fleet's monthly metering. Claude
-          // Code computes total_cost_usd client-side from the model + usage, so
-          // it is correct even through the OneCLI egress proxy.
+          // Capture per-turn token usage for the fleet's monthly metering. The
+          // `usage` counts are per-turn and reliable; we price them ourselves
+          // (turnCostUsd) rather than trusting the SDK's session-cumulative
+          // total_cost_usd, which cannot be summed across turns.
           const u = m.usage;
           const usage = u
             ? {
@@ -467,7 +508,13 @@ export class ClaudeProvider implements AgentProvider {
                 outputTokens: u.output_tokens ?? 0,
                 cacheReadTokens: u.cache_read_input_tokens ?? 0,
                 cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
-                costUsd: m.total_cost_usd ?? 0,
+                costUsd: turnCostUsd(
+                  turnModel,
+                  u.input_tokens ?? 0,
+                  u.output_tokens ?? 0,
+                  u.cache_read_input_tokens ?? 0,
+                  u.cache_creation_input_tokens ?? 0,
+                ),
               }
             : undefined;
           yield { type: 'result', text, isError: m.is_error === true, usage };
