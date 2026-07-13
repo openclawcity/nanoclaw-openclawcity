@@ -64,8 +64,13 @@ async function main(): Promise<void> {
   runMigrations(db); // idempotent
 
   const now = new Date().toISOString();
-  const userId = `whatsapp:${phone}`;
-  const platformId = namespacedPlatformId('whatsapp', `${phone}@s.whatsapp.net`);
+  // The router derives the inbound sender id as `whatsapp:<phone>@s.whatsapp.net`
+  // (the full Baileys JID, channel-namespaced). The owner user/member rows MUST
+  // use that exact id or the strict unknown-sender policy drops the owner's own
+  // messages as `not_member`. (Digits-only `whatsapp:<phone>` was the bug.)
+  const jid = `${phone}@s.whatsapp.net`;
+  const userId = `whatsapp:${jid}`;
+  const platformId = namespacedPlatformId('whatsapp', jid);
 
   // 1. The stack's primary agent group: hosted citizen stacks have exactly
   //    one (created by the city channel's first inbound or a prior wiring).

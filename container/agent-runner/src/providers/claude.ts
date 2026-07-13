@@ -444,9 +444,33 @@ export class ClaudeProvider implements AgentProvider {
           // (e.g. a non-retryable 403 billing_error) carry their message in
           // `errors[]` instead. Surface either so the poll-loop can deliver a
           // billing/quota notice to the user rather than dropping the turn.
-          const m = message as { result?: string; is_error?: boolean; errors?: string[] };
+          const m = message as {
+            result?: string;
+            is_error?: boolean;
+            errors?: string[];
+            total_cost_usd?: number;
+            usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
+            };
+          };
           const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
-          yield { type: 'result', text, isError: m.is_error === true };
+          // Capture token/cost usage for the fleet's monthly metering. Claude
+          // Code computes total_cost_usd client-side from the model + usage, so
+          // it is correct even through the OneCLI egress proxy.
+          const u = m.usage;
+          const usage = u
+            ? {
+                inputTokens: u.input_tokens ?? 0,
+                outputTokens: u.output_tokens ?? 0,
+                cacheReadTokens: u.cache_read_input_tokens ?? 0,
+                cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
+                costUsd: m.total_cost_usd ?? 0,
+              }
+            : undefined;
+          yield { type: 'result', text, isError: m.is_error === true, usage };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'rate_limit_event') {

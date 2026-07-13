@@ -14,10 +14,66 @@ import {
   type RoutingContext,
 } from './formatter.js';
 import { isUploadTraceCommand, uploadTrace } from './upload-trace.js';
-import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
+import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange, TurnUsage } from './providers/types.js';
+import * as fs from 'fs';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
+
+// Cumulative hosted-usage snapshot, written to the group dir (RW-mounted at
+// /workspace/agent, host path groups/<folder>/). The fleet daemon reads it to
+// meter the subscriber's monthly spend. Turns are serialized per agent, so the
+// read-modify-write below never races. A dot-file so it isn't surfaced to the
+// agent as a workspace file.
+const HOSTED_USAGE_PATH = '/workspace/agent/.hosted-usage.json';
+
+interface HostedUsageSnapshot {
+  period: string; // YYYY-MM (UTC)
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+  turns: number;
+  updatedAt: string;
+}
+
+/**
+ * Add one turn's usage to the monthly snapshot in the group dir. Resets when
+ * the UTC month rolls over. Fully best-effort: any fs error is swallowed so a
+ * metering hiccup never disrupts message delivery.
+ */
+function recordHostedUsage(u: TurnUsage): void {
+  try {
+    const period = new Date().toISOString().slice(0, 7);
+    let snap: HostedUsageSnapshot = {
+      period,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      costUsd: 0,
+      turns: 0,
+      updatedAt: '',
+    };
+    try {
+      const prev = JSON.parse(fs.readFileSync(HOSTED_USAGE_PATH, 'utf-8')) as HostedUsageSnapshot;
+      if (prev && prev.period === period) snap = prev;
+    } catch {
+      // no prior snapshot (or a new month) — start fresh
+    }
+    snap.inputTokens += u.inputTokens || 0;
+    snap.outputTokens += u.outputTokens || 0;
+    snap.cacheReadTokens += u.cacheReadTokens || 0;
+    snap.cacheCreationTokens += u.cacheCreationTokens || 0;
+    snap.costUsd += u.costUsd || 0;
+    snap.turns += 1;
+    snap.updatedAt = new Date().toISOString();
+    fs.writeFileSync(HOSTED_USAGE_PATH, JSON.stringify(snap));
+  } catch {
+    // metering must never break the turn
+  }
+}
 
 /**
  * Number of consecutive `database disk image is malformed` errors after which
@@ -474,6 +530,10 @@ export async function processQuery(
         // Claude session with no prior context.
         setContinuation(providerName, event.continuation);
       } else if (event.type === 'result') {
+        // Meter this turn's token/cost before anything else (before any
+        // early-return path below), so the fleet daemon can read cumulative
+        // monthly spend from the group dir.
+        if (event.usage) recordHostedUsage(event.usage);
         // A result — with or without text — means the turn is done. Mark
         // the initial batch completed now so the host sweep doesn't see
         // stale 'processing' claims while the query stays open for

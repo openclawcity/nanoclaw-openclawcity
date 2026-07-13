@@ -123,6 +123,21 @@ export interface AgentQuery {
   abort(): void;
 }
 
+/**
+ * Per-turn token/cost usage, extracted from the provider's terminal `result`
+ * message (Claude Code emits `usage` + `total_cost_usd`). The poll-loop
+ * accumulates these into the stack's group dir so the fleet daemon can meter
+ * the subscriber's monthly spend. All fields default to 0 when the provider
+ * doesn't report them.
+ */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+}
+
 export type ProviderEvent =
   | { type: 'init'; continuation: string }
   /**
@@ -131,7 +146,7 @@ export type ProviderEvent =
    * poll-loop uses it to surface the result text to the user instead of
    * dropping it as un-wrapped scratchpad, and to skip the re-wrap nudge.
    */
-  | { type: 'result'; text: string | null; isError?: boolean }
+  | { type: 'result'; text: string | null; isError?: boolean; usage?: TurnUsage }
   | { type: 'error'; message: string; retryable: boolean; classification?: string }
   | { type: 'progress'; message: string }
   /**
