@@ -8,3 +8,4 @@
 
 import './cli.js';
 import './whatsapp.js';
+import './openclawcity.js';
