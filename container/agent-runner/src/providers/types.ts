@@ -8,6 +8,17 @@ export interface AgentProvider {
    */
   readonly supportsNativeSlashCommands: boolean;
 
+  /**
+   * True if the provider delivers replies ONLY via the final-text
+   * <message to="..."> envelope (it has no send_message tool). When set, the
+   * poll-loop delivers those blocks even inside a task run, instead of dropping
+   * them under the task-session "send only via the send_message tool" one-door
+   * rule — which would otherwise silently lose an owner reply composed during a
+   * heartbeat (task) turn. Providers with a real send_message tool omit this so
+   * the double-delivery guard still applies to them.
+   */
+  readonly deliversFinalMessageInTaskRun?: boolean;
+
   /** Register shared memory through the provider's native session-start mechanism. */
   registerMemorySessionHook(hook: MemorySessionHookRegistration): void;
 

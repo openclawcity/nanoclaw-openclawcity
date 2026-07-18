@@ -4,7 +4,7 @@ import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
-import { isCorruptionError, processQuery } from './poll-loop.js';
+import { dispatchResultText, isCorruptionError, processQuery } from './poll-loop.js';
 import { MockProvider } from './providers/mock.js';
 import type { AgentQuery, ProviderEvent } from './providers/types.js';
 
@@ -538,5 +538,62 @@ describe('task-run turn wiring (real processQuery)', () => {
     expect(logs[1]).toContain('[undelivered → local-cli] fire two result');
     expect(logs).not.toContain('first delivery decision handled');
     expect(logs).not.toContain('second delivery decision handled');
+  });
+});
+
+// --- Step 3b: task-run reply delivery for envelope-only providers -----------
+// dispatchResultText normally drops a final-text <message> block inside a task
+// run (the send_message one-door rule). Halo has no send_message tool, so an
+// owner DM answered during a heartbeat (task) turn was silently lost. The
+// deliverInTaskRun flag lets the poll-loop deliver those blocks for such
+// providers while preserving the drop for send_message providers.
+describe('dispatchResultText task-run delivery (Step 3b)', () => {
+  const OWNER_TASK_ROUTING = {
+    platformId: 'owner-plat',
+    channelType: 'occ',
+    threadId: null,
+    inReplyTo: 'i1',
+    taskRun: true,
+  };
+
+  function seedOwner(): void {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('owner', 'owner', 'channel', 'occ', 'owner-plat', NULL)`,
+      )
+      .run();
+  }
+
+  function chatRows(): Array<{ text: string }> {
+    return (
+      getOutboundDb()
+        .prepare("SELECT content FROM messages_out WHERE kind = 'chat' ORDER BY seq")
+        .all() as Array<{ content: string }>
+    ).map((r) => JSON.parse(r.content) as { text: string });
+  }
+
+  it('drops a task-run <message> block by default (send_message one-door preserved)', () => {
+    seedOwner();
+    const { sent } = dispatchResultText(
+      '<message to="owner">answer composed during a heartbeat turn</message>',
+      OWNER_TASK_ROUTING,
+      false,
+    );
+    expect(sent).toBe(0);
+    expect(chatRows()).toHaveLength(0);
+  });
+
+  it('delivers a task-run <message> block when the provider delivers only via the envelope (Halo)', () => {
+    seedOwner();
+    const { sent } = dispatchResultText(
+      '<message to="owner">answer composed during a heartbeat turn</message>',
+      OWNER_TASK_ROUTING,
+      true,
+    );
+    expect(sent).toBe(1);
+    const rows = chatRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text).toBe('answer composed during a heartbeat turn');
   });
 });

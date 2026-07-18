@@ -258,6 +258,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         config.provider.onExchangeComplete?.bind(config.provider),
         prompt,
         continuation,
+        config.provider.deliversFinalMessageInTaskRun ?? false,
       );
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -347,6 +348,7 @@ export async function processQuery(
   onExchangeComplete: ((exchange: ProviderExchange) => void) | undefined,
   initialPrompt: string,
   initialContinuation: string | undefined,
+  deliversFinalMessageInTaskRun = false,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -502,7 +504,7 @@ export async function processQuery(
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
         if (event.text) {
-          const { sent, hasUnwrapped, taskBlocks } = dispatchResultText(event.text, routing);
+          const { sent, hasUnwrapped, taskBlocks } = dispatchResultText(event.text, routing, deliversFinalMessageInTaskRun);
           const willRetryTaskBlocks = shouldNudgeTaskBlocks(routing.taskRun, taskBlocks, taskBlockNudged);
           // One-door task delivery: the final text becomes the run log entry
           // while explicit append-log calls remain optional additive notes.
@@ -641,6 +643,7 @@ export interface TaskMessageBlock {
 export function dispatchResultText(
   text: string,
   routing: RoutingContext,
+  deliverInTaskRun = false,
 ): { sent: number; hasUnwrapped: boolean; taskBlocks: TaskMessageBlock[] } {
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
 
@@ -664,7 +667,10 @@ export function dispatchResultText(
     // A final-text <message to> block here is either an echo of a tool send the
     // agent already made (the double-delivery class) or a send down the wrong
     // path — never deliver it, keep it visible in the scratchpad/run log.
-    if (routing.taskRun) {
+    // EXCEPTION: a provider that delivers ONLY via this envelope (e.g. Halo, no
+    // send_message tool) must have its task-run blocks delivered, else an owner
+    // reply composed during a heartbeat (task) turn is silently dropped.
+    if (routing.taskRun && !deliverInTaskRun) {
       log(`Task run: <message to="${toName}"> block not delivered — task sessions send only via explicit tools`);
       scratchpadParts.push(
         `[not delivered — task sessions send only via the send_message tool; to="${toName}"] ${body}`,
