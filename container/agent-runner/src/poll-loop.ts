@@ -1,4 +1,4 @@
-import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
+import { findByName, findByRouting, getAllDestinations, type DestinationEntry } from './destinations.js';
 import {
   getPendingMessages,
   markProcessing,
@@ -672,11 +672,24 @@ export function dispatchResultText(
       taskBlocks.push({ to: toName, body });
       continue;
     }
-    const dest = findByName(toName);
+    // A destination name-miss (the agent addresses a name that doesn't
+    // resolve — stale, hallucinated, or renamed) must never silently drop a
+    // reply. Fall back to the channel the inbound batch actually arrived on
+    // before giving up — that's always a valid, currently-wired destination
+    // for whoever is waiting on this turn.
+    let dest = findByName(toName);
+    let usedFallback = false;
     if (!dest) {
-      log(`Unknown destination in <message to="${toName}">, dropping block`);
+      dest = findByRouting(routing.channelType, routing.platformId);
+      usedFallback = dest !== undefined;
+    }
+    if (!dest) {
+      log(`Unknown destination in <message to="${toName}">, dropping block (no origin channel to fall back to)`);
       scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
       continue;
+    }
+    if (usedFallback) {
+      log(`Unknown destination in <message to="${toName}"> — falling back to origin channel "${dest.name}"`);
     }
     sendToDestination(dest, body, routing);
     sent++;

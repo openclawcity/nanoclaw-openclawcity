@@ -48,10 +48,10 @@ const HEARTBEAT_CACHE_MS = 5 * 60 * 1000; // 5 minutes
 // Hard cap on the [CITY CONTEXT] snapshot prepended to event turns. Full
 // heartbeats run 30KB+; injected repeatedly into one long-lived session they
 // blew past the model context.
-const CITY_CONTEXT_MAX_CHARS = 8000;
+const CITY_CONTEXT_MAX_CHARS = 2000;
 // Suppress re-prepending the (cached, identical) city-context snapshot for the
 // same conversation within this window. See context-dedup.ts.
-const CONTEXT_REINJECT_WINDOW_MS = 60 * 1000; // 60 seconds
+const CONTEXT_REINJECT_WINDOW_MS = 600000; // 10 minutes
 
 // City event types that are addressed directly to the agent. These get
 // isMention=true so NanoClaw's router auto-engages; ambient observations

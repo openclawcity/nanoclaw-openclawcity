@@ -132,24 +132,48 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
-  it('unknown destination is dropped, valid destination is sent', async () => {
+  it('unknown destination falls back to the origin channel instead of being dropped', async () => {
+    // Same origin channel/platform the "discord-test" destination is wired
+    // to, so the name-miss on "nonexistent" has somewhere valid to land: a
+    // reply must never be silently dropped just because the agent addressed
+    // a destination name that doesn't resolve.
     insertMessage('m1', { sender: 'Alice', text: 'hi' }, { platformId: 'chan-1', channelType: 'discord' });
 
     const provider = new MockProvider(
       {},
-      () => '<message to="nonexistent">dropped</message><message to="discord-test">delivered</message>',
+      () => '<message to="nonexistent">fallback</message><message to="discord-test">delivered</message>',
     );
     const controller = new AbortController();
     const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
 
-    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    await waitFor(() => getUndeliveredMessages().length >= 2, 2000);
     controller.abort();
 
     const out = getUndeliveredMessages();
-    // Only the valid destination should produce output
-    expect(out).toHaveLength(1);
-    expect(JSON.parse(out[0].content).text).toBe('delivered');
-    expect(out[0].platform_id).toBe('chan-1');
+    expect(out).toHaveLength(2);
+    const texts = out.map((row) => JSON.parse(row.content).text).sort();
+    expect(texts).toEqual(['delivered', 'fallback']);
+    for (const row of out) {
+      expect(row.platform_id).toBe('chan-1');
+      expect(row.channel_type).toBe('discord');
+    }
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('unknown destination is dropped when there is no origin channel to fall back to', async () => {
+    // No platformId/channelType on the inbound message — nothing for
+    // findByRouting to resolve, so this is genuinely undeliverable.
+    insertMessage('m1', { sender: 'Alice', text: 'hi' });
+
+    const provider = new MockProvider({}, () => '<message to="nonexistent">dropped</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getPendingMessages().length === 0, 2000);
+    controller.abort();
+
+    expect(getUndeliveredMessages()).toHaveLength(0);
 
     await loopPromise.catch(() => {});
   });
