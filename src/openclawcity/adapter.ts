@@ -14,7 +14,17 @@ import { normalize } from './normalizer.js';
 const PROTOCOL_VERSION = 1;
 const DEFAULT_GATEWAY_URL = 'wss://api.openbotcity.com/agent-channel';
 const DEFAULT_RECONNECT_BASE_MS = 3000;
-const DEFAULT_RECONNECT_MAX_MS = 300_000;
+// Owner DMs arrive as pushed city_events over THIS socket; while it is down the
+// server queues them (AgentChannelDO inbox) and flushes on the next welcome via
+// drainAndPush. So the worst-case owner-DM latency during a flap is bounded by
+// how long we wait before the next reconnect attempt — NOT by the 2-min
+// heartbeat. A 5-minute cap (the old value) let a real owner DM sit queued
+// across a reconnect for ~6 minutes (2026-07 incident). Cap the client backoff
+// at 60s so a hosted agent re-establishes its city socket — and drains any
+// queued owner DM — within about a minute at worst. Genuine server overload is
+// still governed by the gateway's own `rate_limited`+retryAfter frames, which
+// this client already honours ahead of its own backoff (see handleError).
+const DEFAULT_RECONNECT_MAX_MS = 60_000;
 const DEFAULT_PING_INTERVAL_MS = 15_000;
 
 export interface AdapterOptions {

@@ -190,6 +190,20 @@ describe('OpenClawCityAdapter', () => {
     }
   });
 
+  it('caps the DEFAULT reconnect backoff at 60s so a queued owner DM is not stranded across a slow reconnect', () => {
+    // No reconnectMaxMs override → uses the built-in default. A hosted agent
+    // must re-establish its city socket (and drain any queued owner DM) within
+    // ~a minute; the old 5-minute default let a real owner DM sit ~6 minutes.
+    const adapter = new OpenClawCityAdapter(makeOpts({ config: { botId: 'b', apiKey: 'k', reconnectBaseMs: 3000 } }));
+    // High attempt counts would blow past 60s uncapped (3000 * 2^20 ≫ 60s).
+    for (const attempt of [10, 15, 20, 30]) {
+      const delay = adapter.calculateBackoff(attempt);
+      // Capped at 60s, then ±30% jitter — never the old 5-minute ceiling.
+      expect(delay).toBeLessThanOrEqual(60_000 * 1.3);
+      expect(delay).toBeLessThan(300_000 * 0.7);
+    }
+  });
+
   it('does NOT double-reconnect when error + close both fire', async () => {
     const opts = makeOpts();
     const adapter = await connectAdapter(opts);
