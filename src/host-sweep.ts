@@ -30,7 +30,7 @@ import type Database from 'better-sqlite3';
 import fs from 'fs';
 
 import { ensureEgressNetwork } from './egress-lockdown.js';
-import { getActiveSessions, isTaskThread, updateSession } from './db/sessions.js';
+import { getActiveSessions, isRelayThread, isTaskThread, updateSession } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import {
   countDueMessages,
@@ -67,6 +67,13 @@ export const ABSOLUTE_CEILING_MS = 30 * 60 * 1000;
 // Stuck tolerance window applied per 'processing' claim — "did we see any
 // signs of life since this message was claimed?"
 export const CLAIM_STUCK_MS = 60 * 1000;
+// Idle grace for a spent one-shot relay container. Relay sessions never get a
+// second message (each inbound city event mints its own), so once the container
+// has finished the event and gone quiet this long it is pure waste — reap it
+// instead of waiting for ABSOLUTE_CEILING_MS (30 min). The long-lived main
+// channel session and the recurring heartbeat task session are never relay
+// threads, so they are unaffected and stay warm.
+export const IDLE_RELAY_GRACE_MS = 3 * 60 * 1000;
 const MAX_TRIES = 5;
 const BACKOFF_BASE_MS = 5000;
 
@@ -176,6 +183,50 @@ export function shouldCloseTaskSession(
   return isTaskThread(threadId) && !containerRunning && liveTaskCount === 0;
 }
 
+/**
+ * Decide whether a relay session's idle-warm container should be reaped this
+ * sweep tick. Pure so the rule is unit-testable without a DB or Docker.
+ *
+ * Fires only when the session is a one-shot relay thread whose container is
+ * running but has nothing left to do (no due inbound, no live task rows, no
+ * outstanding processing claim) and has shown no sign of life for `graceMs`.
+ * The wake tick is skipped (`justWoke`) so a freshly-spawned container is never
+ * killed before it has had a chance to work, and a container that never wrote a
+ * heartbeat and has no recorded activity is left to the crashed / ceiling paths
+ * rather than reaped here.
+ */
+export function shouldReapIdleRelay(args: {
+  now: number;
+  threadId: string | null;
+  alive: boolean;
+  justWoke: boolean;
+  dueCount: number;
+  liveTaskCount: number;
+  claimCount: number;
+  heartbeatMtimeMs: number; // 0 when the heartbeat file is absent
+  lastActiveMs: number; // 0 when unknown
+  graceMs: number;
+}): boolean {
+  const {
+    now,
+    threadId,
+    alive,
+    justWoke,
+    dueCount,
+    liveTaskCount,
+    claimCount,
+    heartbeatMtimeMs,
+    lastActiveMs,
+    graceMs,
+  } = args;
+  if (!isRelayThread(threadId)) return false;
+  if (!alive || justWoke) return false;
+  if (dueCount > 0 || liveTaskCount > 0 || claimCount > 0) return false;
+  const lastSignOfLife = Math.max(heartbeatMtimeMs, lastActiveMs);
+  if (lastSignOfLife === 0) return false;
+  return now - lastSignOfLife > graceMs;
+}
+
 async function sweepSession(session: Session): Promise<void> {
   const agentGroup = getAgentGroup(session.agent_group_id);
   if (!agentGroup) return;
@@ -256,6 +307,38 @@ async function sweepSession(session: Session): Promise<void> {
           .prepare("SELECT COUNT(*) AS c FROM messages_in WHERE kind = 'task' AND status IN ('pending', 'paused')")
           .get() as { c: number }
       ).c;
+
+      // 6a. Reap an idle-warm one-shot relay container promptly instead of
+      // waiting for the 30-min absolute ceiling. Each inbound city event mints
+      // its own relay session, so a spent + quiet relay container will never be
+      // reused — left alone it just piles up under the event rate. The main
+      // channel session (null thread) and the recurring heartbeat task session
+      // are never relay threads, so they are excluded here and stay warm.
+      if (alive && outDb && isRelayThread(session.thread_id)) {
+        const reap = shouldReapIdleRelay({
+          now: Date.now(),
+          threadId: session.thread_id,
+          alive,
+          justWoke,
+          dueCount,
+          liveTaskCount: liveTasks,
+          claimCount: getProcessingClaims(outDb).length,
+          heartbeatMtimeMs: heartbeatMtimeMs(agentGroup.id, session.id),
+          lastActiveMs: session.last_active ? parseSqliteUtc(session.last_active) : 0,
+          graceMs: IDLE_RELAY_GRACE_MS,
+        });
+        if (reap) {
+          log.info('Reaping idle relay container', {
+            sessionId: session.id,
+            threadId: session.thread_id,
+          });
+          killContainer(session.id, 'relay-idle-reap');
+        }
+      }
+
+      // 6b. GC a spent task session once its container is down. killContainer
+      // (6a) removes the activeContainers entry asynchronously on process exit,
+      // so a just-reaped relay is closed on a later tick — no double-handling.
       if (shouldCloseTaskSession(session.thread_id, isContainerRunning(session.id), liveTasks)) {
         updateSession(session.id, { status: 'closed' });
         log.info('Closed spent task session', { sessionId: session.id, threadId: session.thread_id });

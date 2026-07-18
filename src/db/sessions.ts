@@ -96,6 +96,18 @@ export function isTaskThread(threadId: string | null): boolean {
   return threadId === TASKS_SYSTEM_THREAD_ID || (threadId?.startsWith(`${TASKS_SYSTEM_THREAD_ID}:`) ?? false);
 }
 
+/**
+ * True for a relay session thread — a one-shot task session minted per inbound
+ * city event (`system:tasks:relay-<id>`). Every event mints its own relay
+ * session, so once its container has finished the event it will never be
+ * reused, unlike the long-lived main channel session (null thread) or the
+ * recurring heartbeat task session. Callers use this to reap spent relay
+ * containers early instead of keeping them warm.
+ */
+export function isRelayThread(threadId: string | null): boolean {
+  return threadId?.startsWith(`${TASKS_SYSTEM_THREAD_ID}:relay-`) ?? false;
+}
+
 /** All active task sessions for a group — one per live series, plus any legacy shared one. */
 export function findTaskSessions(agentGroupId: string): Session[] {
   return getDb()
